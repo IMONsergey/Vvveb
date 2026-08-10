@@ -1,0 +1,19 @@
+{
+  "name": "Vvveb GitHub Preview",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "postCreateCommand": "docker compose -f docker-compose.preview.yml up -d",
+  "forwardPorts": [8080, 8081],
+  "portsAttributes": {
+    "8080": {
+      "label": "Vvveb CMS",
+      "onAutoForward": "openPreview"
+    },
+    "8081": {
+      "label": "phpMyAdmin",
+      "onAutoForward": "notify"
+    }
+  }
+}
