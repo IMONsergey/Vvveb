@@ -1,16 +1,19 @@
-FROM vvveb/vvvebcms:latest
+FROM vvveb/vvvebcms:php8.5-fpm-alpine
 
 USER root
 
-# Upstream's official image installs mysqli but leaves SQLite disabled.
-# Vvveb's SQLite driver instantiates the native PHP SQLite3 class, so
-# install both sqlite3 and pdo_sqlite for the Vercel evaluation runtime.
+# The current upstream FPM Alpine image includes mysqli/pgsql but not the
+# native SQLite3 extension. Vvveb's SQLite driver uses the \SQLite3 class.
 RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends libsqlite3-dev; \
+    apk add --no-cache --virtual .vvveb-sqlite-build sqlite-dev $PHPIZE_DEPS; \
     docker-php-ext-install -j"$(nproc)" sqlite3 pdo_sqlite; \
-    rm -rf /var/lib/apt/lists/*
+    apk del .vvveb-sqlite-build; \
+    php -m | grep -Ei 'sqlite3|pdo_sqlite'
 
 ENV DB_ENGINE=sqlite
 
 EXPOSE 80
+
+# Preserve the upstream /init.sh command. It downloads Vvveb into the image's
+# writable /var/www/html volume and starts nginx + php-fpm via supervisord.
+CMD ["/init.sh"]
