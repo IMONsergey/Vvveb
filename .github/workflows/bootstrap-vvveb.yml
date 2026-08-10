@@ -3,6 +3,8 @@ name: Bootstrap Vvveb mirror
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -20,6 +22,7 @@ jobs:
       - name: Checkout target repository
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
       - name: Fetch Vvveb upstream with submodules
@@ -51,8 +54,6 @@ jobs:
               runs-on: ubuntu-latest
               steps:
                 - uses: actions/checkout@v4
-                  with:
-                    submodules: recursive
                 - name: Validate PHP syntax
                   run: |
                     find . -type f -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 -P4 php -l
@@ -75,8 +76,6 @@ jobs:
               runs-on: ubuntu-latest
               steps:
                 - uses: actions/checkout@v4
-                  with:
-                    submodules: recursive
                 - uses: docker/setup-buildx-action@v3
                 - uses: docker/login-action@v3
                   with:
@@ -101,17 +100,17 @@ jobs:
           cat > DEPLOYMENT.md <<'MD'
           # Deployment
 
-          This repository mirrors the full Vvveb CMS source, including its upstream submodules as regular files for easier experimentation.
+          This repository mirrors the complete Vvveb CMS source. Upstream submodules are materialized as regular files so the project is self-contained and easy to modify.
 
-          Vvveb is a PHP application and cannot run on GitHub Pages. GitHub Actions validates the PHP source and builds a container image in GitHub Container Registry (GHCR).
+          Vvveb is a PHP application and cannot execute on GitHub Pages. GitHub Actions validates the source and builds the repository Docker image in GitHub Container Registry (GHCR).
 
           ## Runtime requirements
 
           - PHP 8.3 recommended
           - MySQL/MariaDB, PostgreSQL, or SQLite
-          - A PHP-capable runtime (container host, VPS, or PaaS)
+          - A PHP/container runtime
 
-          The public application must therefore be deployed from this GitHub repository to a PHP/container host. GitHub remains the source of truth and CI/container registry.
+          GitHub is the source of truth, CI system and container registry. A persistent PHP/container host is required for a public application URL.
           MD
 
           git config user.name 'github-actions[bot]'
