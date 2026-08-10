@@ -1,48 +1,66 @@
 FROM php:8.4-cli-alpine
 
-RUN apk add --no-cache \
+RUN set -eux; \
+    apk add --no-cache \
       git curl unzip \
-      libzip libxml2 libpng libjpeg-turbo freetype gettext icu-libs sqlite-libs oniguruma \
-    && apk add --no-cache --virtual .build-deps \
+      libzip libxml2 libpng libjpeg-turbo freetype gettext icu-libs sqlite-libs oniguruma; \
+    apk add --no-cache --virtual .build-deps \
       $PHPIZE_DEPS \
       libzip-dev libxml2-dev libpng-dev libjpeg-turbo-dev freetype-dev \
-      gettext-dev icu-dev sqlite-dev oniguruma-dev curl-dev \
-    && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j"$(nproc)" \
-      mysqli pdo_mysql sqlite3 pdo_sqlite xml dom curl zip gd mbstring intl gettext \
-    && apk del .build-deps
+      gettext-dev icu-dev sqlite-dev oniguruma-dev curl-dev; \
+    docker-php-ext-configure gd --with-freetype --with-jpeg; \
+    docker-php-ext-install -j"$(nproc)" \
+      mysqli pdo_mysql sqlite3 pdo_sqlite xml dom curl zip gd mbstring intl gettext; \
+    apk del .build-deps; \
+    php -r 'foreach (["mysqli","mysqlnd","xml","libxml","pcre","zip","dom","curl","gettext","sqlite3","pdo_sqlite"] as $ext) { if (!extension_loaded($ext)) { fwrite(STDERR, "Missing PHP extension: $ext\n"); exit(1); } }'
 
 ENV VVVEB_SHA=5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1
 ENV VVVEB_ADMIN_EMAIL=admin@vvveb.local
 ENV VVVEB_ADMIN_PASSWORD=ImonVvveb-2026-7cH9
 
-RUN git clone --recurse-submodules https://github.com/givanz/Vvveb.git /opt/vvveb \
-    && cd /opt/vvveb \
-    && git checkout "$VVVEB_SHA" \
-    && git submodule update --init --recursive \
-    && mkdir -p storage/sqlite storage/cache storage/model storage/compiled-templates public/media public/image-cache storage/logs \
-    && chmod -R a+rwX config storage public/media public/themes public/image-cache plugins \
-    && php cli.php install \
+RUN set -eux; \
+    git clone --recurse-submodules https://github.com/givanz/Vvveb.git /opt/vvveb; \
+    cd /opt/vvveb; \
+    git checkout "$VVVEB_SHA"; \
+    git submodule update --init --recursive; \
+    mkdir -p storage/sqlite storage/cache storage/model storage/compiled-templates public/media public/image-cache storage/logs; \
+    chmod -R a+rwX config storage public/media public/themes public/image-cache plugins; \
+    php cli.php install \
       engine=sqlite \
       'admin[email]'="$VVVEB_ADMIN_EMAIL" \
       'admin[username]'=admin \
-      'admin[password]'="$VVVEB_ADMIN_PASSWORD" \
-      'hostname'=\*\.\*\.\* \
-    && test -s config/db.php \
-    && test -s storage/sqlite/vvveb.db \
-    && find /opt/vvveb -name .git -exec rm -rf {} + 2>/dev/null || true
+      'admin[password]'="$VVVEB_ADMIN_PASSWORD"; \
+    test -s config/db.php; \
+    test -s storage/sqlite/vvveb.db; \
+    test -s public/index.php; \
+    test -s public/admin/index.php; \
+    find /opt/vvveb -name .git -prune -exec rm -rf '{}' ';'
 
 RUN cat > /opt/vvveb/router.php <<'PHP'
 <?php
 $uri = rawurldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/');
-$file = __DIR__ . '/public' . $uri;
-if ($uri !== '/' && is_file($file)) {
-    return false;
+$public = __DIR__ . '/public';
+
+if ($uri === '/__health') {
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => true, 'runtime' => 'vvveb-preinstalled']);
+    return true;
 }
-chdir(__DIR__ . '/public');
-require __DIR__ . '/public/index.php';
+
+if (!str_contains($uri, '..')) {
+    $candidate = $public . $uri;
+    if ($uri === '/' || is_file($candidate) || is_dir($candidate)) {
+        return false;
+    }
+}
+
+chdir($public);
+require $public . '/index.php';
 PHP
 
 EXPOSE 3000
 
-CMD ["sh", "-lc", "rm -rf /tmp/vvveb && cp -a /opt/vvveb /tmp/vvveb && cd /tmp/vvveb && exec php -d display_errors=0 -d log_errors=1 -S 0.0.0.0:${PORT:-3000} router.php"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-3000}/__health" >/dev/null || exit 1
+
+CMD ["sh", "-lc", "set -eu; rm -rf /tmp/vvveb; cp -a /opt/vvveb /tmp/vvveb; cd /tmp/vvveb; exec php -d display_errors=0 -d log_errors=1 -S 0.0.0.0:${PORT:-3000} -t public router.php"]
