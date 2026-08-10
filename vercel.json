@@ -1,13 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "services": {
-    "app": {
-      "runtime": "container",
-      "root": ".",
-      "entrypoint": "Dockerfile.vercel"
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "destination": "https://vvveb-launcher-cdo-2844s-projects.vercel.app/$1",
+      "permanent": false
     }
-  },
-  "rewrites": [
-    { "source": "/(.*)", "destination": { "service": "app" } }
   ]
 }
