@@ -1,35 +1,40 @@
 # Vvveb — IMON runtime
 
-GitHub is the source of truth for this project. Because the full Vvveb CMS cannot run on GitHub Pages, the primary hosted runtime is Vercel.
+GitHub is the source of truth for this project. Because the full Vvveb CMS cannot run on GitHub Pages, the hosted runtime is Vercel.
 
-## Primary runtime: Vercel Sandbox
+## Primary public preview — preinstalled Vercel container
 
-Stable launcher URL:
+Stable URL:
+
+`https://vvveb-cdo-2844s-projects.vercel.app`
+
+Admin:
+
+- URL: `https://vvveb-cdo-2844s-projects.vercel.app/admin/`
+- Username: `admin`
+- Password: `ImonVvveb-2026-7cH9`
+
+The first Vercel experiment allowed the Vvveb installer to run at request time. That failed after installation because Vvveb writes `config/db.php`, SQLite data, media and theme/editor files to local storage while normal Vercel container invocations are stateless.
+
+The primary preview now avoids the installer completely:
+
+1. `Dockerfile.vercel` builds PHP 8.4 with all required Vvveb extensions.
+2. It clones pinned Vvveb upstream SHA `5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1` with recursive submodules.
+3. Vvveb + SQLite + the admin account are installed during Docker build.
+4. On each container cold start the ready CMS is copied to writable `/tmp/vvveb`.
+5. The CMS immediately starts on Vercel's `$PORT` with a PHP router; no web installer is involved.
+
+This runtime is optimized for evaluating the full UI/admin/page-builder workflow. Mutations can survive while the same container instance remains warm, but they are not guaranteed to persist across Vercel cold starts.
+
+## Persistent runtime experiment — Vercel Sandbox
+
+Stable launcher:
 
 `https://vvveb-launcher-cdo-2844s-projects.vercel.app`
 
-Vvveb is a stateful PHP CMS. Its installer and visual editor write database/configuration data, uploaded media, theme templates, backups, plugins and generated files to the local filesystem. A normal Vercel Container Function is stateless, so it can display the installer but is not a valid runtime for the installed CMS.
+`vercel-launcher/` uses a named persistent Vercel Sandbox (`vvveb-stateful`). The current launcher no longer tries to run nested Docker. Instead it installs PHP natively in the Sandbox, clones Vvveb, installs SQLite automatically and starts a PHP server on the exposed port. Vercel Sandbox persistence/snapshots are intended to retain CMS files across Sandbox sessions.
 
-The `vercel-launcher/` project solves this by using a **named persistent Vercel Sandbox**:
-
-1. `vvveb-launcher` receives the browser request.
-2. It creates or resumes the named `vvveb-stateful` Sandbox.
-3. The Sandbox installs/starts Docker when needed.
-4. It clones the pinned upstream Vvveb source with recursive submodules into the persistent Sandbox filesystem.
-5. It runs the official Vvveb image with the source directory bind-mounted into `/var/www/html`.
-6. Vvveb uses SQLite inside that persistent source tree.
-7. The launcher reverse-proxies browser traffic to the Sandbox, so the public launcher URL remains stable across Sandbox sessions.
-8. Vercel Cron calls `/__warm` periodically to start or resume the environment without requiring a manual launch.
-
-Pinned upstream revision:
-
-`5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1`
-
-## Why the first direct Vercel deployment failed
-
-The first experiment ran `vvveb/vvvebcms` directly as a Vercel container service. The installer loaded, but installation writes `config/db.php`, SQLite data and other state to `/var/www/html`. The editor also edits/deletes/copies theme files and stores media on disk. Those mutations are incompatible with stateless function invocations, causing the post-install flow to fail.
-
-The direct `Dockerfile.vercel` / root `vercel.json` files are retained only as a record of that experiment. `vercel-launcher/` is the supported Vercel path.
+The launcher reverse-proxies traffic to the current Sandbox URL and has a `/__warm` cron endpoint for automatic resume.
 
 ## Local / Codespaces fallback
 
@@ -49,5 +54,6 @@ docker compose -f docker-compose.preview.yml up -d
 ## Upstream
 
 - Repository: `givanz/Vvveb`
+- Pinned revision: `5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1`
 - License: AGPL-3.0-or-later
-- Full upstream includes recursive submodules for themes, admin UI and plugins.
+- Recursive submodules provide the themes, admin UI and plugins used by the full CMS.
