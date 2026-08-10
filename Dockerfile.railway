@@ -1,3 +1,6 @@
 FROM vvveb/vvvebcms:latest
 
+ENV DB_ENGINE=sqlite \
+    PORT=80
+
 EXPOSE 80
