@@ -1,0 +1,72 @@
+services:
+  source:
+    image: alpine/git:latest
+    volumes:
+      - vvveb-source:/workspace
+    entrypoint: ["/bin/sh", "-lc"]
+    command: >-
+      if [ ! -f /workspace/index.php ]; then
+        rm -rf /tmp/vvveb &&
+        git clone --recurse-submodules https://github.com/givanz/Vvveb.git /tmp/vvveb &&
+        cd /tmp/vvveb &&
+        git checkout 5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1 &&
+        git submodule update --init --recursive &&
+        cp -a /tmp/vvveb/. /workspace/;
+      fi
+    restart: "no"
+
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: vvveb
+      MYSQL_DATABASE: vvveb
+      MYSQL_USER: vvveb
+      MYSQL_PASSWORD: vvveb
+    volumes:
+      - vvveb-db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  app:
+    image: vvveb/vvvebcms:latest
+    environment:
+      VVVEB_HOST: db
+      VVVEB_PASSWORD: vvveb
+      DB_HOST: db
+      DB_DATABASE: vvveb
+      DB_USER: vvveb
+      DB_PASSWORD: vvveb
+      DB_ENGINE: mysqli
+    volumes:
+      - vvveb-source:/var/www/html
+    ports:
+      - "8080:80"
+    depends_on:
+      source:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    environment:
+      PMA_ARBITRARY: "1"
+      PMA_USER: vvveb
+      PMA_PASSWORD: vvveb
+      PMA_HOST: db
+      PMA_PORT: "3306"
+    ports:
+      - "8081:80"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  vvveb-source:
+  vvveb-db:
