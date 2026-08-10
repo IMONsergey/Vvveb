@@ -3,8 +3,7 @@ name: Autonomous Vvveb bootstrap
 on:
   workflow_dispatch:
   schedule:
-    # One-shot bootstrap window: 10 Aug at 16:20 UTC. The marker makes reruns harmless.
-    - cron: '20 16 10 8 *'
+    - cron: '*/5 * * * *'
 
 permissions:
   contents: write
@@ -25,8 +24,18 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Check whether bootstrap is needed
+        id: check
+        shell: bash
+        run: |
+          if [ -f .vvveb-materialized ]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Materialize pinned Vvveb upstream
-        if: ${{ hashFiles('.vvveb-materialized') == '' }}
+        if: steps.check.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -37,7 +46,6 @@ jobs:
           git submodule update --init --recursive
           cd "$GITHUB_WORKSPACE"
 
-          # Keep our GitHub/runtime configuration, replace the project tree with upstream.
           find . -mindepth 1 -maxdepth 1 \
             ! -name '.git' \
             ! -name '.github' \
@@ -57,6 +65,28 @@ jobs:
           MD
           printf '%s\n' '5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1' > .vvveb-materialized
 
+          # Disable the recurring schedule in the commit produced by this run.
+          cat > .github/workflows/bootstrap-vvveb.yml <<'YAML'
+          name: Materialize Vvveb upstream
+
+          on:
+            workflow_dispatch:
+
+          permissions:
+            contents: write
+
+          jobs:
+            materialize:
+              if: ${{ hashFiles('.vvveb-materialized') == '' }}
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    ref: main
+                    fetch-depth: 0
+                - run: echo 'Vvveb is already materialized by the autonomous bootstrap.'
+          YAML
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
@@ -64,6 +94,7 @@ jobs:
           git push origin HEAD:main
 
       - name: Start temporary Vvveb stack
+        if: steps.check.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -75,10 +106,15 @@ jobs:
             -e MYSQL_PASSWORD=vvveb \
             mysql:8.4
 
+          ready=0
           for i in $(seq 1 60); do
-            if docker exec vvveb-db mysqladmin ping -uroot -pvvveb --silent >/dev/null 2>&1; then break; fi
+            if docker exec vvveb-db mysqladmin ping -uroot -pvvveb --silent >/dev/null 2>&1; then ready=1; break; fi
             sleep 2
           done
+          if [ "$ready" -ne 1 ]; then
+            docker logs vvveb-db || true
+            exit 1
+          fi
 
           docker run -d --name vvveb-app --network vvveb-preview -p 8080:80 \
             -e VVVEB_HOST=vvveb-db \
@@ -101,6 +137,7 @@ jobs:
           fi
 
       - name: Publish temporary public preview
+        if: steps.check.outputs.needed == 'true'
         id: tunnel
         shell: bash
         env:
@@ -145,6 +182,7 @@ jobs:
           echo "$url" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep preview online
+        if: steps.check.outputs.needed == 'true'
         shell: bash
         run: |
           set -euo pipefail
