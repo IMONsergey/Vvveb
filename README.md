@@ -2,16 +2,11 @@
 
 This repository is prepared to run the upstream **Vvveb CMS** from GitHub infrastructure without requiring a local PHP/MySQL installation.
 
-## Upstream
+## Launch in GitHub Codespaces
 
-- Repository: `givanz/Vvveb`
-- Pinned upstream commit: `5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1`
-- Submodules are fetched recursively at runtime.
-- License: AGPL-3.0-or-later (upstream license applies to Vvveb).
+[Open Vvveb in GitHub Codespaces](https://codespaces.new/IMONsergey/Vvveb?quickstart=1)
 
-## Fastest preview: GitHub Codespaces
-
-Open this repository in GitHub Codespaces. The included `.devcontainer/devcontainer.json` automatically starts Docker Compose.
+The included `.devcontainer/devcontainer.json` automatically starts Docker Compose.
 
 Ports:
 
@@ -28,6 +23,13 @@ On first launch, Vvveb may show its normal installer. Use the database values be
 
 Choose your own administrator email and password during installation.
 
+## Upstream
+
+- Repository: `givanz/Vvveb`
+- Pinned upstream commit: `5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1`
+- Submodules are fetched recursively at runtime.
+- License: AGPL-3.0-or-later (upstream license applies to Vvveb).
+
 ## Run with Docker Compose
 
 ```bash
@@ -42,10 +44,10 @@ To reset everything:
 docker compose -f docker-compose.preview.yml down -v
 ```
 
-## Why not GitHub Pages?
+## GitHub runtime model
 
-Vvveb is a PHP CMS with a database-backed admin panel and editor. GitHub Pages only serves static files, so the full application cannot execute there. GitHub Codespaces can run the complete Docker stack; for a permanent public URL the same compose/runtime must be deployed to a persistent container host.
+Vvveb is a PHP CMS with a database-backed admin panel and editor. The full application is therefore run in GitHub Codespaces/Docker rather than as a static GitHub Pages site. For a permanent public URL the same compose/runtime can be deployed to a persistent container host while GitHub remains the source of truth.
 
-## Repository bootstrap
+## Repository materialization
 
-`.github/workflows/bootstrap-vvveb.yml` is also included as a repository-materialization workflow. When GitHub Actions is allowed to execute it, it replaces this thin runtime wrapper with a self-contained copy of the upstream Vvveb tree and its submodules, then installs CI/container workflows.
+`.github/workflows/bootstrap-vvveb.yml` is a manual-only repository-materialization workflow. When explicitly dispatched in GitHub Actions, it replaces this thin runtime wrapper with a self-contained copy of the pinned upstream Vvveb tree and recursive submodules, then installs CI for the materialized source.
