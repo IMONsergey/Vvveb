@@ -1,0 +1,15 @@
+FROM vvveb/vvvebcms:php8.5-fpm-alpine
+
+USER root
+
+RUN set -eux; \
+    apk add --no-cache sqlite-libs; \
+    apk add --no-cache --virtual .vvveb-sqlite-build sqlite-dev $PHPIZE_DEPS; \
+    docker-php-ext-install -j"$(nproc)" sqlite3 pdo_sqlite; \
+    apk del .vvveb-sqlite-build; \
+    php -r 'var_dump(class_exists("SQLite3"));'; \
+    php -m | grep -Ei 'sqlite3|pdo_sqlite'
+
+ENV DB_ENGINE=sqlite
+EXPOSE 80
+CMD ["/init.sh"]
