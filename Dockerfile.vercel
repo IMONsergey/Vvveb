@@ -1,5 +1,16 @@
 FROM vvveb/vvvebcms:latest
 
+USER root
+
+# Upstream's official image installs mysqli but leaves SQLite disabled.
+# Vvveb's SQLite driver instantiates the native PHP SQLite3 class, so
+# install both sqlite3 and pdo_sqlite for the Vercel evaluation runtime.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends libsqlite3-dev; \
+    docker-php-ext-install -j"$(nproc)" sqlite3 pdo_sqlite; \
+    rm -rf /var/lib/apt/lists/*
+
 ENV DB_ENGINE=sqlite
 
 EXPOSE 80
