@@ -1,0 +1,5 @@
+FROM vvveb/vvvebcms:latest
+
+ENV DB_ENGINE=sqlite
+
+EXPOSE 80
