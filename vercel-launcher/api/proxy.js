@@ -6,46 +6,50 @@ const TIMEOUT_MS = 40 * 60 * 1000;
 const SNAPSHOT_MS = 30 * 24 * 60 * 60 * 1000;
 const SOURCE_DIR = '/vercel/sandbox/vvveb';
 const UPSTREAM_SHA = '5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1';
+const ADMIN_EMAIL = 'admin@vvveb.local';
+const ADMIN_PASSWORD = 'ImonVvveb-2026-7cH9';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function shell(sbx, script, { sudo = false, detached = false } = {}) {
-  return sbx.runCommand({ cmd: 'bash', args: ['-lc', script], sudo, detached });
+async function shell(sbx, script, { sudo = false, detached = false, cwd } = {}) {
+  return sbx.runCommand({ cmd: 'bash', args: ['-lc', script], sudo, detached, cwd });
 }
 
-async function ensureDocker(sbx) {
-  let result = await shell(sbx, 'command -v docker >/dev/null 2>&1');
-  if (result.exitCode !== 0) {
-    result = await shell(sbx, `
-      set -e
-      if command -v dnf >/dev/null 2>&1; then
-        dnf install -y docker git curl
-      elif command -v apt-get >/dev/null 2>&1; then
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io git curl
-      else
-        echo 'No supported package manager found' >&2
-        exit 2
-      fi
-    `, { sudo: true });
-    if (result.exitCode !== 0) throw new Error(`Docker install failed: ${await result.stderr()}`);
+async function ensureRuntime(sbx) {
+  const probe = await shell(sbx, `command -v php >/dev/null 2>&1 && php -r 'exit(class_exists("SQLite3") && extension_loaded("mysqli") && extension_loaded("xml") && extension_loaded("curl") && extension_loaded("zip") ? 0 : 1);'`);
+  if (probe.exitCode === 0) return;
+
+  let install = await shell(sbx, `
+    set -e
+    if command -v dnf >/dev/null 2>&1; then
+      dnf install -y \
+        php8.4 php8.4-cli php8.4-common php8.4-mysqlnd php8.4-pdo \
+        php8.4-xml php8.4-zip php8.4-gd php8.4-mbstring php8.4-intl \
+        git curl unzip
+    elif command -v apt-get >/dev/null 2>&1; then
+      apt-get update
+      DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        php-cli php-common php-mysql php-sqlite3 php-xml php-curl php-zip \
+        php-gd php-mbstring php-intl git curl unzip
+    else
+      echo 'Unsupported Sandbox base image: no dnf/apt-get' >&2
+      exit 2
+    fi
+  `, { sudo: true });
+
+  if (install.exitCode !== 0) {
+    throw new Error(`PHP runtime install failed: ${await install.stderr()}`);
   }
 
-  result = await shell(sbx, 'docker info >/dev/null 2>&1', { sudo: true });
-  if (result.exitCode !== 0) {
-    await sbx.runCommand({
-      cmd: 'dockerd',
-      args: ['--host=unix:///var/run/docker.sock'],
-      sudo: true,
-      detached: true,
-    });
-    let ready = false;
-    for (let i = 0; i < 45; i += 1) {
-      await sleep(1000);
-      const probe = await shell(sbx, 'docker info >/dev/null 2>&1', { sudo: true });
-      if (probe.exitCode === 0) { ready = true; break; }
-    }
-    if (!ready) throw new Error('Docker daemon did not become ready');
+  const diagnostics = await shell(sbx, `
+    set -e
+    php -v
+    php -m
+    php -r 'if (!class_exists("SQLite3")) { fwrite(STDERR, "SQLite3 missing\\n"); exit(10); }'
+    php -r 'foreach (["mysqli","xml","curl","zip","dom","gettext"] as $e) if (!extension_loaded($e)) { fwrite(STDERR, "$e missing\\n"); exit(11); }'
+  `);
+  if (diagnostics.exitCode !== 0) {
+    throw new Error(`PHP extensions incomplete: ${await diagnostics.stderr()}\n${await diagnostics.stdout()}`);
   }
 }
 
@@ -62,40 +66,73 @@ async function ensureSource(sbx) {
     git submodule update --init --recursive
     mkdir -p storage/sqlite storage/cache storage/model storage/compiled-templates public/media public/image-cache
     chmod -R a+rwX config storage public/media public/themes public/image-cache plugins
+    cat > router.php <<'PHP'
+<?php
+$uri = rawurldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/');
+$file = __DIR__ . '/public' . $uri;
+if ($uri !== '/' && is_file($file)) {
+    return false;
+}
+chdir(__DIR__ . '/public');
+require __DIR__ . '/public/index.php';
+PHP
   `);
   if (setup.exitCode !== 0) throw new Error(`Vvveb source setup failed: ${await setup.stderr()}`);
 }
 
-async function ensureVvveb(sbx) {
-  await ensureDocker(sbx);
-  await ensureSource(sbx);
+async function ensureInstalled(sbx) {
+  const installed = await shell(sbx, `test -s ${SOURCE_DIR}/config/db.php && test -s ${SOURCE_DIR}/storage/sqlite/vvveb.db`);
+  if (installed.exitCode === 0) return;
 
-  const inspect = await shell(sbx, 'docker inspect vvveb >/dev/null 2>&1', { sudo: true });
-  if (inspect.exitCode === 0) {
-    await shell(sbx, 'docker start vvveb >/dev/null 2>&1 || true', { sudo: true });
-  } else {
-    const run = await shell(sbx, `
-      docker run -d \\
-        --name vvveb \\
-        --restart unless-stopped \\
-        -p 0.0.0.0:${PORT}:80 \\
-        -e DB_ENGINE=sqlite \\
-        -v ${SOURCE_DIR}:/var/www/html \\
-        vvveb/vvvebcms:php8.5-fpm-alpine
-    `, { sudo: true });
-    if (run.exitCode !== 0) throw new Error(`Vvveb container start failed: ${await run.stderr()}`);
+  const install = await shell(sbx, `
+    set -euo pipefail
+    cd ${SOURCE_DIR}
+    rm -f config/db.php storage/sqlite/vvveb.db
+    mkdir -p storage/sqlite
+    php cli.php install \
+      engine=sqlite \
+      admin[email]=${ADMIN_EMAIL} \
+      admin[username]=admin \
+      admin[password]=${ADMIN_PASSWORD} \
+      hostname='*.*.*'
+    test -s config/db.php
+    test -s storage/sqlite/vvveb.db
+  `);
+  if (install.exitCode !== 0) {
+    throw new Error(`Vvveb CLI install failed: ${await install.stderr()}\n${await install.stdout()}`);
   }
+}
 
-  let ready = false;
-  for (let i = 0; i < 60; i += 1) {
-    const probe = await shell(sbx, `curl -fsS --max-time 3 http://127.0.0.1:${PORT}/ >/dev/null 2>&1`);
-    if (probe.exitCode === 0) { ready = true; break; }
+async function ensureServer(sbx) {
+  const existing = await shell(sbx, `curl -fsS --max-time 2 http://127.0.0.1:${PORT}/ >/dev/null 2>&1`);
+  if (existing.exitCode === 0) return;
+
+  await shell(sbx, `pkill -f 'php -S 0.0.0.0:${PORT}' >/dev/null 2>&1 || true`);
+  await sbx.runCommand({
+    cmd: 'php',
+    args: ['-d', 'display_errors=0', '-d', 'log_errors=1', '-S', `0.0.0.0:${PORT}`, 'router.php'],
+    cwd: SOURCE_DIR,
+    detached: true,
+  });
+
+  for (let i = 0; i < 45; i += 1) {
     await sleep(1000);
+    const ready = await shell(sbx, `curl -fsS --max-time 3 http://127.0.0.1:${PORT}/ >/dev/null 2>&1`);
+    if (ready.exitCode === 0) return;
   }
-  if (!ready) {
-    const logs = await shell(sbx, 'docker logs --tail 120 vvveb 2>&1', { sudo: true });
-    throw new Error(`Vvveb did not become ready: ${await logs.stdout()}`);
-  }
+
+  const diag = await shell(sbx, `
+    ps aux | grep '[p]hp -S' || true
+    tail -n 100 ${SOURCE_DIR}/storage/logs/error_log 2>/dev/null || true
+  `);
+  throw new Error(`Native Vvveb server did not become ready: ${await diag.stdout()}\n${await diag.stderr()}`);
+}
+
+async function ensureVvveb(sbx) {
+  await ensureRuntime(sbx);
+  await ensureSource(sbx);
+  await ensureInstalled(sbx);
+  await ensureServer(sbx);
 }
 
 async function getSandbox() {
@@ -127,9 +164,21 @@ export default async function handler(req, res) {
     const sbx = await getSandbox();
     const sandboxBase = sbx.domain(PORT).replace(/\/$/, '');
 
-    if (req.url.startsWith('/__warm')) {
+    if (req.url.startsWith('/__warm') || req.url.startsWith('/__status')) {
+      const status = await shell(sbx, `
+        printf 'php='; php -r 'echo PHP_VERSION;' 2>/dev/null || true
+        printf '\ninstalled='; test -s ${SOURCE_DIR}/config/db.php && echo yes || echo no
+        printf 'db='; test -s ${SOURCE_DIR}/storage/sqlite/vvveb.db && echo yes || echo no
+        printf 'server='; curl -fsS --max-time 2 http://127.0.0.1:${PORT}/ >/dev/null 2>&1 && echo yes || echo no
+      `);
       res.setHeader('Cache-Control', 'no-store');
-      return res.status(200).json({ ok: true, sandbox: SANDBOX_NAME, upstream: sandboxBase });
+      return res.status(200).json({
+        ok: true,
+        sandbox: SANDBOX_NAME,
+        upstream: sandboxBase,
+        admin: { username: 'admin', email: ADMIN_EMAIL, password: ADMIN_PASSWORD },
+        diagnostics: await status.stdout(),
+      });
     }
 
     const body = await readRequestBody(req);
@@ -169,7 +218,7 @@ export default async function handler(req, res) {
     res.status(500).json({
       ok: false,
       error: error instanceof Error ? error.message : String(error),
-      hint: 'Persistent Vvveb Sandbox could not be started or resumed',
+      hint: 'Native persistent Vvveb Sandbox could not be started or resumed',
     });
   }
 }
