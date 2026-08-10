@@ -1,0 +1,145 @@
+name: Public Vvveb Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_minutes:
+        description: "How long to keep the public preview online"
+        required: true
+        default: "60"
+        type: choice
+        options:
+          - "30"
+          - "60"
+          - "180"
+          - "330"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vvveb-public-preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Vvveb + Cloudflare Tunnel
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Start Vvveb with SQLite
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull vvveb/vvvebcms:latest
+          docker run -d \
+            --name vvveb-preview \
+            -p 8080:80 \
+            -e DB_ENGINE=sqlite \
+            vvveb/vvvebcms:latest
+
+          echo "Waiting for Vvveb on http://127.0.0.1:8080 ..."
+          ready=0
+          for i in $(seq 1 90); do
+            if curl -fsS --max-time 5 http://127.0.0.1:8080/ >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "Vvveb did not become ready. Container logs:"
+            docker logs vvveb-preview || true
+            exit 1
+          fi
+
+          echo "Vvveb is ready."
+
+      - name: Install Cloudflare Tunnel client
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Publish Vvveb to the internet
+        id: tunnel
+        shell: bash
+        run: |
+          set -euo pipefail
+          nohup cloudflared tunnel \
+            --no-autoupdate \
+            --url http://127.0.0.1:8080 \
+            >/tmp/cloudflared.log 2>&1 &
+          echo $! >/tmp/cloudflared.pid
+
+          url=""
+          for i in $(seq 1 60); do
+            url=$(grep -Eo 'https://[-a-z0-9]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n1 || true)
+            if [ -n "$url" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$url" ]; then
+            echo "Cloudflare Quick Tunnel did not return a public URL."
+            cat /tmp/cloudflared.log || true
+            exit 1
+          fi
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Vvveb public preview::$url"
+
+          {
+            echo "# Vvveb public preview"
+            echo
+            echo "**Public URL:** $url"
+            echo
+            echo "**Admin:** $url/admin"
+            echo
+            echo "This preview remains online for **${{ inputs.duration_minutes }} minutes** unless the workflow is cancelled earlier."
+            echo
+            echo "If the Vvveb installer appears, choose **SQLite** and create your temporary admin account."
+            echo
+            echo "> This environment is ephemeral. Data disappears when the workflow ends."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep preview online
+        shell: bash
+        run: |
+          set -euo pipefail
+          duration="${{ inputs.duration_minutes }}"
+          seconds=$((duration * 60))
+          echo "Preview: ${{ steps.tunnel.outputs.url }}"
+          echo "Keeping preview online for ${duration} minutes."
+
+          elapsed=0
+          while [ "$elapsed" -lt "$seconds" ]; do
+            if ! docker ps --format '{{.Names}}' | grep -qx 'vvveb-preview'; then
+              echo "Vvveb container stopped unexpectedly."
+              docker logs vvveb-preview || true
+              exit 1
+            fi
+            if ! kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null; then
+              echo "Cloudflare Tunnel stopped unexpectedly."
+              cat /tmp/cloudflared.log || true
+              exit 1
+            fi
+            sleep 30
+            elapsed=$((elapsed + 30))
+          done
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          if [ -f /tmp/cloudflared.pid ]; then
+            kill "$(cat /tmp/cloudflared.pid)" 2>/dev/null || true
+          fi
+          docker rm -f vvveb-preview 2>/dev/null || true
