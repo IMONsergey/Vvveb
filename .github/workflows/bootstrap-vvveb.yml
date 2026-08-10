@@ -1,0 +1,121 @@
+name: Bootstrap Vvveb mirror
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-vvveb
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch Vvveb upstream with submodules
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules https://github.com/givanz/Vvveb.git /tmp/vvveb
+          find /tmp/vvveb -name .git -exec rm -rf {} + 2>/dev/null || true
+
+      - name: Mirror upstream into this repository
+        run: |
+          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -a /tmp/vvveb/. .
+          rm -f .github/workflows/bootstrap-vvveb.yml
+
+          mkdir -p .github/workflows
+          cat > .github/workflows/ci.yml <<'YAML'
+          name: Vvveb CI
+
+          on:
+            push:
+              branches: [main]
+            pull_request:
+              branches: [main]
+
+          permissions:
+            contents: read
+
+          jobs:
+            php-smoke:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    submodules: recursive
+                - name: Validate PHP syntax
+                  run: |
+                    find . -type f -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 -P4 php -l
+          YAML
+
+          cat > .github/workflows/docker.yml <<'YAML'
+          name: Build Vvveb container
+
+          on:
+            push:
+              branches: [main]
+            workflow_dispatch:
+
+          permissions:
+            contents: read
+            packages: write
+
+          jobs:
+            docker:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                  with:
+                    submodules: recursive
+                - uses: docker/setup-buildx-action@v3
+                - uses: docker/login-action@v3
+                  with:
+                    registry: ghcr.io
+                    username: ${{ github.actor }}
+                    password: ${{ secrets.GITHUB_TOKEN }}
+                - uses: docker/metadata-action@v5
+                  id: meta
+                  with:
+                    images: ghcr.io/${{ github.repository }}
+                    tags: |
+                      type=raw,value=latest,enable={{is_default_branch}}
+                      type=sha
+                - uses: docker/build-push-action@v6
+                  with:
+                    context: .
+                    push: true
+                    tags: ${{ steps.meta.outputs.tags }}
+                    labels: ${{ steps.meta.outputs.labels }}
+          YAML
+
+          cat > DEPLOYMENT.md <<'MD'
+          # Deployment
+
+          This repository mirrors the full Vvveb CMS source, including its upstream submodules as regular files for easier experimentation.
+
+          Vvveb is a PHP application and cannot run on GitHub Pages. GitHub Actions validates the PHP source and builds a container image in GitHub Container Registry (GHCR).
+
+          ## Runtime requirements
+
+          - PHP 8.3 recommended
+          - MySQL/MariaDB, PostgreSQL, or SQLite
+          - A PHP-capable runtime (container host, VPS, or PaaS)
+
+          The public application must therefore be deployed from this GitHub repository to a PHP/container host. GitHub remains the source of truth and CI/container registry.
+          MD
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Mirror Vvveb upstream and add GitHub CI/container build'
+          git push origin HEAD:main
