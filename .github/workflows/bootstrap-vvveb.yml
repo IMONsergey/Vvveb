@@ -1,18 +1,23 @@
-name: Materialize Vvveb upstream
+name: Autonomous Vvveb bootstrap
 
 on:
   workflow_dispatch:
+  schedule:
+    # One-shot bootstrap window: 10 Aug at 16:20 UTC. The marker makes reruns harmless.
+    - cron: '20 16 10 8 *'
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
-  group: materialize-vvveb-upstream
+  group: autonomous-vvveb-bootstrap
   cancel-in-progress: false
 
 jobs:
-  materialize:
+  bootstrap:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - name: Checkout target repository
         uses: actions/checkout@v4
@@ -20,53 +25,131 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Fetch pinned Vvveb upstream with submodules
+      - name: Materialize pinned Vvveb upstream
+        if: ${{ hashFiles('.vvveb-materialized') == '' }}
+        shell: bash
         run: |
+          set -euo pipefail
+          rm -rf /tmp/vvveb
           git clone --recurse-submodules https://github.com/givanz/Vvveb.git /tmp/vvveb
           cd /tmp/vvveb
           git checkout 5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1
           git submodule update --init --recursive
-          find /tmp/vvveb -name .git -exec rm -rf {} + 2>/dev/null || true
+          cd "$GITHUB_WORKSPACE"
 
-      - name: Materialize upstream into main
-        run: |
-          find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          cp -a /tmp/vvveb/. .
-          rm -f .github/workflows/bootstrap-vvveb.yml
+          # Keep our GitHub/runtime configuration, replace the project tree with upstream.
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name '.git' \
+            ! -name '.github' \
+            ! -name '.devcontainer' \
+            ! -name 'docker-compose.preview.yml' \
+            ! -name 'Dockerfile.railway' \
+            ! -name 'railway.toml' \
+            -exec rm -rf {} +
+          rsync -a --exclude='.git' --exclude='.github' /tmp/vvveb/ ./
 
-          mkdir -p .github/workflows
-          cat > .github/workflows/ci.yml <<'YAML'
-          name: Vvveb CI
+          cat > IMON-DEPLOYMENT.md <<'MD'
+          # IMON Vvveb deployment
 
-          on:
-            push:
-              branches: [main]
-            pull_request:
-              branches: [main]
+          This repository contains a materialized copy of upstream `givanz/Vvveb` pinned to commit `5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1`, including recursive submodules as ordinary files.
 
-          permissions:
-            contents: read
-
-          jobs:
-            php-smoke:
-              runs-on: ubuntu-latest
-              steps:
-                - uses: actions/checkout@v4
-                - name: Validate PHP syntax
-                  run: |
-                    find . -type f -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 -P4 php -l
-          YAML
-
-          cat > DEPLOYMENT.md <<'MD'
-          # Deployment
-
-          This branch contains a materialized copy of Vvveb upstream commit `5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1` with recursive submodules copied as regular files.
-
-          Vvveb is a PHP application and cannot execute on GitHub Pages. Use a persistent PHP/container runtime for a public deployment.
+          Extra runtime helpers are kept for GitHub Codespaces, temporary GitHub/Cloudflare preview and Railway deployment.
           MD
+          printf '%s\n' '5adb8cde58b74bb95ee1bb07505efb2ff76cdfe1' > .vvveb-materialized
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m 'Materialize Vvveb upstream 5adb8cde'
           git push origin HEAD:main
+
+      - name: Start temporary Vvveb stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker network create vvveb-preview || true
+          docker run -d --name vvveb-db --network vvveb-preview \
+            -e MYSQL_ROOT_PASSWORD=vvveb \
+            -e MYSQL_DATABASE=vvveb \
+            -e MYSQL_USER=vvveb \
+            -e MYSQL_PASSWORD=vvveb \
+            mysql:8.4
+
+          for i in $(seq 1 60); do
+            if docker exec vvveb-db mysqladmin ping -uroot -pvvveb --silent >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+
+          docker run -d --name vvveb-app --network vvveb-preview -p 8080:80 \
+            -e VVVEB_HOST=vvveb-db \
+            -e VVVEB_PASSWORD=vvveb \
+            -e DB_HOST=vvveb-db \
+            -e DB_DATABASE=vvveb \
+            -e DB_USER=vvveb \
+            -e DB_PASSWORD=vvveb \
+            -e DB_ENGINE=mysqli \
+            vvveb/vvvebcms:latest
+
+          ready=0
+          for i in $(seq 1 90); do
+            if curl -fsS --max-time 5 http://127.0.0.1:8080/ >/dev/null 2>&1; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs vvveb-app || true
+            exit 1
+          fi
+
+      - name: Publish temporary public preview
+        id: tunnel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sudo curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
+          nohup cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8080 >/tmp/cloudflared.log 2>&1 &
+          echo $! >/tmp/cloudflared.pid
+
+          url=''
+          for i in $(seq 1 60); do
+            url=$(grep -Eo 'https://[-a-z0-9]+\.trycloudflare\.com' /tmp/cloudflared.log | head -n1 || true)
+            [ -n "$url" ] && break
+            sleep 2
+          done
+          [ -n "$url" ] || { cat /tmp/cloudflared.log; exit 1; }
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+          body=$(cat <<EOF
+          ## Vvveb public preview
+
+          **Site:** $url
+
+          **Admin:** $url/admin
+
+          This is an ephemeral autonomous preview created by GitHub Actions. It remains available while the bootstrap job is running (about 5 hours). Data in this preview is temporary.
+
+          Database for the installer: host \`vvveb-db\`, database \`vvveb\`, user \`vvveb\`, password \`vvveb\`, engine \`mysqli\`.
+          EOF
+          )
+
+          issue=$(gh issue list --repo "$GITHUB_REPOSITORY" --search 'Vvveb live preview in:title' --state open --json number --jq '.[0].number // empty')
+          if [ -n "$issue" ]; then
+            gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title 'Vvveb live preview' --body "$body"
+          fi
+
+          echo "### Vvveb public preview" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep preview online
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 600); do
+            docker ps --format '{{.Names}}' | grep -qx vvveb-app || exit 1
+            kill -0 "$(cat /tmp/cloudflared.pid)" 2>/dev/null || exit 1
+            sleep 30
+          done
