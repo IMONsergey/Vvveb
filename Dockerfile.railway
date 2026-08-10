@@ -1,0 +1,3 @@
+FROM vvveb/vvvebcms:latest
+
+EXPOSE 80
