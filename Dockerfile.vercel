@@ -58,9 +58,11 @@ chdir($public);
 require $public . '/index.php';
 PHP
 
-EXPOSE 3000
+# Vercel container functions route to port 80 unless PORT is explicitly
+# overridden in project settings. Keep the image compatible with both cases.
+EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -fsS "http://127.0.0.1:${PORT:-3000}/__health" >/dev/null || exit 1
+  CMD curl -fsS "http://127.0.0.1:${PORT:-80}/__health" >/dev/null || exit 1
 
-CMD ["sh", "-lc", "set -eu; rm -rf /tmp/vvveb; cp -a /opt/vvveb /tmp/vvveb; cd /tmp/vvveb; exec php -d display_errors=0 -d log_errors=1 -S 0.0.0.0:${PORT:-3000} -t public router.php"]
+CMD ["sh", "-lc", "set -eu; port=${PORT:-80}; echo \"[vvveb] booting on port ${port}\" >&2; rm -rf /tmp/vvveb; cp -a /opt/vvveb /tmp/vvveb; cd /tmp/vvveb; exec php -d display_errors=0 -d log_errors=1 -S 0.0.0.0:${port} -t public router.php"]
