@@ -1,0 +1,49 @@
+name: Vvveb deployment health diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe stable and immutable Vvveb URLs
+        shell: bash
+        run: |
+          set -u
+          urls=(
+            "https://vvveb-cdo-2844s-projects.vercel.app/"
+            "https://vvveb-cdo-2844s-projects.vercel.app/__health"
+            "https://vvveb-cdo-2844s-projects.vercel.app/admin/"
+            "https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/"
+            "https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/__health"
+            "https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/admin/"
+          )
+          failed=0
+          for url in "${urls[@]}"; do
+            echo "===== ${url} ====="
+            rm -f /tmp/vvveb-headers /tmp/vvveb-body
+            code=$(curl -sS -L --connect-timeout 10 --max-time 30 \
+              -D /tmp/vvveb-headers -o /tmp/vvveb-body \
+              -w '%{http_code}' "$url") || code="curl-error"
+            echo "HTTP=${code}"
+            echo "--- headers ---"
+            sed -n '1,40p' /tmp/vvveb-headers 2>/dev/null || true
+            echo "--- body (first 1200 bytes) ---"
+            head -c 1200 /tmp/vvveb-body 2>/dev/null || true
+            echo
+            case "$url" in
+              */__health)
+                if [[ "$code" != "200" ]] || ! grep -q '"ok"[[:space:]]*:[[:space:]]*true' /tmp/vvveb-body 2>/dev/null; then failed=1; fi
+                ;;
+              *)
+                if [[ ! "$code" =~ ^2[0-9][0-9]$ ]]; then failed=1; fi
+                ;;
+            esac
+          done
+          exit "$failed"
