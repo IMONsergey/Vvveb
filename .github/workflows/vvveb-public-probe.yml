@@ -1,0 +1,66 @@
+name: Vvveb public probe
+
+on:
+  push:
+    paths:
+      - '.github/workflows/vvveb-public-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe public Vvveb endpoints
+        id: probe
+        shell: bash
+        run: |
+          set -u
+          targets=(
+            'https://vvveb-cdo-2844s-projects.vercel.app/'
+            'https://vvveb-cdo-2844s-projects.vercel.app/__health'
+            'https://vvveb-cdo-2844s-projects.vercel.app/admin/'
+            'https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/'
+            'https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/__health'
+            'https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/admin/'
+          )
+          : > probe.txt
+          for u in "${targets[@]}"; do
+            echo "### $u" >> probe.txt
+            curl -sS -o body.txt -D headers.txt --max-time 20 "$u" || true
+            code=$(awk 'toupper($1) ~ /^HTTP\// {c=$2} END {print c}' headers.txt)
+            loc=$(awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/\r$/,""); sub(/^[^:]+:[[:space:]]*/,""); print; exit}' headers.txt)
+            echo "initial_status=${code:-none}" >> probe.txt
+            echo "location=${loc:-none}" >> probe.txt
+            curl -sS -L -o body-follow.txt -D headers-follow.txt --max-time 30 -w 'final_status=%{http_code}\nfinal_url=%{url_effective}\n' "$u" >> probe.txt || true
+            if grep -qi 'vercel.*login\|sso-api\|sign in to vercel' body-follow.txt headers-follow.txt 2>/dev/null; then
+              echo 'classification=vercel-sso' >> probe.txt
+            elif [[ "$u" == *'/__health' ]] && grep -q '"ok"[[:space:]]*:[[:space:]]*true' body-follow.txt 2>/dev/null; then
+              echo 'classification=healthy' >> probe.txt
+            elif [[ "${code:-}" =~ ^2|^3 ]]; then
+              echo 'classification=app-response' >> probe.txt
+            else
+              echo 'classification=error-or-unreachable' >> probe.txt
+            fi
+            echo >> probe.txt
+          done
+          cat probe.txt
+
+      - name: Post probe result to issue 4
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '## Automated public probe'
+            echo
+            echo '<details><summary>Probe output</summary>'
+            echo
+            echo '```text'
+            cat probe.txt
+            echo '```'
+            echo '</details>'
+          } > comment.md
+          gh issue comment 4 --repo IMONsergey/Vvveb --body-file comment.md
