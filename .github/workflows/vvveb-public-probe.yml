@@ -7,15 +7,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Probe public Vvveb endpoints
-        id: probe
         shell: bash
         run: |
           set -u
@@ -27,27 +28,45 @@ jobs:
             'https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/__health'
             'https://vvveb-3lch7li32-cdo-2844s-projects.vercel.app/admin/'
           )
-          : > probe.txt
+          mkdir -p diagnostics
+          out=diagnostics/vvveb-public-probe.txt
+          {
+            echo "checked_at_utc=$(date -u +%FT%TZ)"
+            echo "source=github-actions"
+            echo
+          } > "$out"
           for u in "${targets[@]}"; do
-            echo "### $u" >> probe.txt
+            echo "### $u" >> "$out"
+            rm -f body.txt body-follow.txt headers.txt headers-follow.txt
             curl -sS -o body.txt -D headers.txt --max-time 20 "$u" || true
-            code=$(awk 'toupper($1) ~ /^HTTP\// {c=$2} END {print c}' headers.txt)
-            loc=$(awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/\r$/,""); sub(/^[^:]+:[[:space:]]*/,""); print; exit}' headers.txt)
-            echo "initial_status=${code:-none}" >> probe.txt
-            echo "location=${loc:-none}" >> probe.txt
-            curl -sS -L -o body-follow.txt -D headers-follow.txt --max-time 30 -w 'final_status=%{http_code}\nfinal_url=%{url_effective}\n' "$u" >> probe.txt || true
+            code=$(awk 'toupper($1) ~ /^HTTP\// {c=$2} END {print c}' headers.txt 2>/dev/null)
+            loc=$(awk 'BEGIN{IGNORECASE=1} /^location:/ {sub(/\r$/,""); sub(/^[^:]+:[[:space:]]*/,""); print; exit}' headers.txt 2>/dev/null)
+            echo "initial_status=${code:-none}" >> "$out"
+            echo "location=${loc:-none}" >> "$out"
+            curl -sS -L -o body-follow.txt -D headers-follow.txt --max-time 30 -w 'final_status=%{http_code}\nfinal_url=%{url_effective}\n' "$u" >> "$out" || true
             if grep -qi 'vercel.*login\|sso-api\|sign in to vercel' body-follow.txt headers-follow.txt 2>/dev/null; then
-              echo 'classification=vercel-sso' >> probe.txt
+              echo 'classification=vercel-sso' >> "$out"
             elif [[ "$u" == *'/__health' ]] && grep -q '"ok"[[:space:]]*:[[:space:]]*true' body-follow.txt 2>/dev/null; then
-              echo 'classification=healthy' >> probe.txt
+              echo 'classification=healthy' >> "$out"
             elif [[ "${code:-}" =~ ^2|^3 ]]; then
-              echo 'classification=app-response' >> probe.txt
+              echo 'classification=app-response' >> "$out"
             else
-              echo 'classification=error-or-unreachable' >> probe.txt
+              echo 'classification=error-or-unreachable' >> "$out"
             fi
-            echo >> probe.txt
+            echo >> "$out"
           done
-          cat probe.txt
+          cat "$out"
+
+      - name: Persist probe result
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add diagnostics/vvveb-public-probe.txt
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'chore: record Vvveb public probe'
+          git push
 
       - name: Post probe result to issue 4
         env:
@@ -59,7 +78,7 @@ jobs:
             echo '<details><summary>Probe output</summary>'
             echo
             echo '```text'
-            cat probe.txt
+            cat diagnostics/vvveb-public-probe.txt
             echo '```'
             echo '</details>'
           } > comment.md
