@@ -85,4 +85,4 @@ jobs:
           gh issue comment 4 --repo IMONsergey/Vvveb --body-file comment.md
 
 # manual diagnostic retrigger: 2026-08-14
-# automation diagnostic retrigger: 2026-08-15T03:36Z
+# automation diagnostic retrigger: 2026-08-15T13:35Z
